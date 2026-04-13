@@ -1,0 +1,48 @@
+{
+    "name": "ux2dev/epay-easypay",
+    "description": "PHP SDK for ePay.bg / EasyPay payment gateway (WEB API, One Touch, Billing)",
+    "type": "library",
+    "license": "MIT",
+    "require": {
+        "php": "^8.2",
+        "ext-openssl": "*",
+        "ext-json": "*",
+        "ext-mbstring": "*",
+        "psr/http-client": "^1.0",
+        "psr/http-factory": "^1.0"
+    },
+    "require-dev": {
+        "pestphp/pest": "^4.0",
+        "guzzlehttp/guzzle": "^7.0",
+        "orchestra/testbench": "^10.0"
+    },
+    "suggest": {
+        "illuminate/support": "^11.0|^12.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "Ux2Dev\\Epay\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Ux2Dev\\Epay\\Tests\\": "tests/"
+        }
+    },
+    "extra": {
+        "laravel": {
+            "providers": [
+                "Ux2Dev\\Epay\\Laravel\\EpayServiceProvider"
+            ],
+            "aliases": {
+                "Epay": "Ux2Dev\\Epay\\Laravel\\EpayFacade"
+            }
+        }
+    },
+    "minimum-stability": "stable",
+    "config": {
+        "allow-plugins": {
+            "pestphp/pest-plugin": true
+        }
+    }
+}
