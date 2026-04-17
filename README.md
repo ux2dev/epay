@@ -7,21 +7,16 @@ A framework-agnostic PHP SDK for the ePay.bg and EasyPay payment gateway. Covers
 ## Requirements
 
 - PHP 8.2 or higher
-- OpenSSL extension
-- JSON extension
+- OpenSSL extension (signing, key generation)
+- JSON extension (One Touch + Billing responses)
 - mbstring extension
-- PSR-18 HTTP client (for One Touch API only, e.g. Guzzle)
+- iconv extension (EasyPay response decoding, CP-1251 obligation files)
+- A PSR-18 HTTP client and PSR-17 request/stream factories (required for One Touch and EasyPay; Laravel installs already ship `guzzlehttp/guzzle` transitively, which provides both)
 
 ## Installation
 
 ```bash
 composer require ux2dev/epay-easypay
-```
-
-For One Touch API, you also need a PSR-18 HTTP client:
-
-```bash
-composer require guzzlehttp/guzzle
 ```
 
 ## Quick Start
@@ -107,7 +102,22 @@ $config = new MerchantConfig(
 
 Use `Environment::Development` for testing. ePay.bg provides a demo environment at `https://demo.epay.bg/` where you can test payments without real money.
 
-**Security:** `MerchantConfig` protects sensitive data. The `secret` and `privateKey` fields are private and accessible only through getter methods. They are redacted in `var_dump()` output and the object cannot be serialized.
+**Security:** `MerchantConfig` protects sensitive data. The `secret` and `privateKey` fields are private and accessible only through getter methods (`getSecret()`, `getPrivateKey()`, `getPrivateKeyPassphrase()`). They are redacted in `var_dump()` output and the object cannot be serialized.
+
+### Enums
+
+All enums live under `Ux2Dev\Epay\Enum\` (or `Ux2Dev\Epay\Billing\Enum\` for Billing-specific ones):
+
+| Enum | Cases | Used for |
+|------|-------|----------|
+| `Currency` | `BGN`, `EUR`, `USD` | Payment currency |
+| `Environment` | `Development`, `Production` | Gateway + One Touch URLs |
+| `SigningMethod` | `HmacSha1`, `Rsa` | Outbound request signing |
+| `PaymentStatus` | `Paid`, `Denied`, `Expired` | WEB notification result |
+| `TransactionType` | `Payment` (`paylogin`), `CreditPayDirect` (`credit_paydirect`) | WEB gateway PAGE value |
+| `BillingRequestType` | `Check`, `Billing`, `Deposit` | Incoming `/billing/init` TYPE |
+| `BillingPaymentType` | `Billing`, `Partial`, `Deposit` | Incoming `/billing/confirm` TYPE |
+| `BillingStatus` | `Success` (00), `InvalidAmount` (13), `InvalidSubscriber` (14), `NoObligation` (62), `Unavailable` (80), `InvalidChecksum` (93), `Duplicate` (94), `GeneralError` (96) | Billing response STATUS codes |
 
 ### Laravel Configuration
 
@@ -136,6 +146,12 @@ return [
             'url_cancel' => env('EPAY_URL_CANCEL'),
             'notification_url' => env('EPAY_NOTIFICATION_URL'),
         ],
+    ],
+
+    'routes' => [
+        'enabled' => env('EPAY_ROUTES_ENABLED', false),
+        'prefix' => env('EPAY_ROUTES_PREFIX', 'epay'),
+        'middleware' => [],
     ],
 ];
 ```
@@ -184,6 +200,19 @@ Epay::web()->createPaymentRequest(...);
 Epay::merchant('building_2')->web()->createPaymentRequest(...);
 Epay::merchant('building_2')->billing()->parseInitRequest(...);
 ```
+
+The facade exposes one client method per API:
+
+| Method | Returns | Purpose |
+|--------|---------|---------|
+| `Epay::web()` | `WebClient` | WEB API (browser form payments + notifications) |
+| `Epay::billing()` | `BillingHandler` | Billing API (EasyPay obligation feed) |
+| `Epay::oneTouch()` | `OneTouchClient` | One Touch API (tokenized mobile/web payments) |
+| `Epay::easyPay()` | `EasyPayClient` | EasyPay cash desk code generation |
+| `Epay::getConfig()` | `MerchantConfig` | Resolved config for the current merchant |
+| `Epay::merchant($name)` | `EpayManager` | Switch to another configured merchant |
+
+`oneTouch()` and `easyPay()` are wired with `GuzzleHttp\Client` and `GuzzleHttp\Psr7\HttpFactory` automatically.
 
 ## WEB API
 
@@ -395,7 +424,10 @@ $keys->saveToDirectory('/path/to/keys');
 In Laravel:
 
 ```bash
-php artisan epay:generate-key --output=/path/to/keys --passphrase=optional
+php artisan epay:generate-key \
+    --output=/path/to/keys \   # Defaults to current working directory
+    --bits=2048 \              # RSA key size. Default: 2048
+    --passphrase=optional      # Encrypt the private key (optional)
 ```
 
 ## Billing API
@@ -660,8 +692,12 @@ $authUrl = $oneTouch->getAuthorizationUrl(
     deviceId: 'user@example.com',    // Unique device/user identifier
     key: bin2hex(random_bytes(16)),   // Unique key for this authorization
     userType: null,                   // 1 = ePay users only, 2 = cards only, null = both
-    deviceName: 'My App',            // Optional device info
-    os: 'Web',
+    deviceName: 'My App',             // Optional
+    brand: null,                      // Optional. Device brand
+    os: 'Web',                        // Optional
+    model: null,                      // Optional
+    osVersion: null,                  // Optional
+    phone: null,                      // Optional
 );
 
 // Redirect the customer
@@ -809,12 +845,12 @@ Allow card payments without user registration or token. The customer is redirect
 ```php
 $paymentUrl = $oneTouch->createNoRegPaymentUrl(
     deviceId: 'user@example.com',
+    id: 'NOREG-' . bin2hex(random_bytes(6)),   // Your unique payment ID (echoed back)
     amount: 2280,
     recipient: '8888',
     recipientType: 'KIN',
     description: 'Monthly maintenance fee',
     reason: 'monthly_fee',
-    show: 'KIN',
     saveCard: false,    // true to save card for future payments
 );
 
@@ -822,11 +858,11 @@ $paymentUrl = $oneTouch->createNoRegPaymentUrl(
 header('Location: ' . $paymentUrl);
 
 // Later, check the payment status. The status endpoint requires the same
-// params used at create (they feed into CHECKSUM), plus the payment `id`
-// echoed back in ePay's redirect.
+// params used at create (they feed into CHECKSUM), including the `id` that
+// ePay echoes back in the redirect query string.
 $status = $oneTouch->getNoRegPaymentStatus(
     deviceId: 'user@example.com',
-    paymentId: 'payment_id',
+    paymentId: $_GET['id'],
     amount: 2280,
     recipient: '8888',
     recipientType: 'KIN',
@@ -868,6 +904,54 @@ The SDK signs requests automatically:
 - **CHECKSUM** (HMAC-SHA1, sorted params, **trailing newline**) — noreg create and noreg status
 
 You do not need to compute these yourself.
+
+## EasyPay API
+
+EasyPay codes let a customer walk into any EasyPay cash desk in Bulgaria and pay against a 10-digit code. This is a server-to-server call: you post an invoice, you get back an IDN (the code the customer will read at the desk).
+
+Calls `<gateway>/ezp/reg_bill.cgi` and parses the plain-text CP-1251 response.
+
+### Creating an EasyPayClient
+
+```php
+use Ux2Dev\Epay\EasyPay\EasyPayClient;
+use GuzzleHttp\Client;
+use GuzzleHttp\Psr7\HttpFactory;
+
+$factory = new HttpFactory();
+$easyPay = new EasyPayClient($config, new Client(), $factory, $factory);
+```
+
+In Laravel:
+
+```php
+$easyPay = Epay::easyPay();
+```
+
+### Generating a Code
+
+```php
+$response = $easyPay->createCode(
+    invoice: 'INV-001',                    // Required
+    amount: '22.80',                       // Required. > 0.01
+    expirationDate: '01.08.2026',          // Required. Format: DD.MM.YYYY
+    email: null,                           // Optional. Merchant email (alternative to MIN)
+    description: 'Monthly fee',            // Optional. Max 100 characters
+    encoding: 'utf-8',                     // Optional. Default: 'utf-8'
+    currency: null,                        // Optional. Defaults to MerchantConfig::currency
+);
+
+if ($response->isSuccess()) {
+    // $response->idn           - 10-digit code to give the customer
+    // $response->status        - Status string returned by ePay
+    // $response->raw           - Full raw key/value map from the response
+} else {
+    // $response->error         - Error code (ERR)
+    // $response->errorMessage  - Human-readable error (ERRM / MESSAGE)
+}
+```
+
+The customer then pays the code at any EasyPay cash desk. When the payment clears, ePay.bg sends a regular WEB notification to your `EPAY_NOTIFICATION_URL` — handle it the same way as any other WEB payment (`$web->handleNotification(...)`).
 
 ## Laravel Routes
 
