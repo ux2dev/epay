@@ -15,4 +15,14 @@ return [
             'notification_url' => env('EPAY_NOTIFICATION_URL'),
         ],
     ],
+    'routes' => [
+        // Enable to load SDK-shipped routes. Registers:
+        //   POST {prefix}/notify            -> WebNotificationController
+        //   GET  {prefix}/billing/init      -> BillingController@init
+        //   GET  {prefix}/billing/confirm   -> BillingController@confirm
+        //   GET  {prefix}/callback          -> OneTouchCallbackController (noreg + auth)
+        'enabled' => env('EPAY_ROUTES_ENABLED', false),
+        'prefix' => env('EPAY_ROUTES_PREFIX', 'epay'),
+        'middleware' => [],
+    ],
 ];

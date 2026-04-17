@@ -17,6 +17,8 @@ final readonly class NotificationHandler
     /** @param array<string, string> $postData */
     public function handle(array $postData): NotificationResult
     {
+        $postData = array_change_key_case($postData, CASE_UPPER);
+
         if (!isset($postData['ENCODED'])) {
             throw new InvalidResponseException('Missing ENCODED field in notification', $postData);
         }

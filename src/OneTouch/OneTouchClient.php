@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Ux2Dev\Epay\OneTouch;
 
 use Psr\Http\Client\ClientInterface;
+use Psr\Http\Message\RequestFactoryInterface;
+use Psr\Http\Message\StreamFactoryInterface;
 use Ux2Dev\Epay\Config\MerchantConfig;
 use Ux2Dev\Epay\Exception\EpayException;
 use Ux2Dev\Epay\OneTouch\Response\CodeResponse;
@@ -16,15 +18,20 @@ use Ux2Dev\Epay\Signing\HmacSigner;
 
 final class OneTouchClient
 {
-    private readonly string $baseUrl;
+    private readonly string $apiUrl;
+
+    private readonly string $mobileUrl;
 
     private readonly HmacSigner $signer;
 
     public function __construct(
         private readonly MerchantConfig $config,
         private readonly ClientInterface $httpClient,
+        private readonly RequestFactoryInterface $requestFactory,
+        private readonly StreamFactoryInterface $streamFactory,
     ) {
-        $this->baseUrl = $config->environment->oneTouchBaseUrl();
+        $this->apiUrl = $config->environment->oneTouchApiUrl();
+        $this->mobileUrl = $config->environment->oneTouchMobileUrl();
         $this->signer = new HmacSigner($config->getSecret());
     }
 
@@ -67,12 +74,12 @@ final class OneTouchClient
             $params['PHONE'] = $phone;
         }
 
-        return $this->baseUrl . '/start?' . http_build_query($params);
+        return $this->mobileUrl . '/start?' . http_build_query($params);
     }
 
     public function getCode(string $deviceId, string $key): CodeResponse
     {
-        $data = $this->get('/code/get', [
+        $data = $this->get('/api/code/get', [
             'APPID' => $this->config->merchantId,
             'DEVICEID' => $deviceId,
             'KEY' => $key,
@@ -83,7 +90,7 @@ final class OneTouchClient
 
     public function getToken(string $deviceId, string $code): TokenResponse
     {
-        $data = $this->get('/token/get', [
+        $data = $this->get('/api/token/get', [
             'APPID' => $this->config->merchantId,
             'DEVICEID' => $deviceId,
             'CODE' => $code,
@@ -94,7 +101,7 @@ final class OneTouchClient
 
     public function invalidateToken(string $deviceId, string $token): void
     {
-        $this->get('/token/invalidate', [
+        $this->get('/api/token/invalidate', [
             'APPID' => $this->config->merchantId,
             'DEVICEID' => $deviceId,
             'TOKEN' => $token,
@@ -190,39 +197,61 @@ final class OneTouchClient
 
     public function createNoRegPaymentUrl(
         string $deviceId,
+        string $id,
         int $amount,
         string $recipient,
         string $recipientType,
         string $description,
         string $reason,
-        string $show,
         bool $saveCard = false,
     ): string {
         $params = [
             'APPID' => $this->config->merchantId,
             'DEVICEID' => $deviceId,
+            'ID' => $id,
             'AMOUNT' => (string) $amount,
             'RCPT' => $recipient,
             'RCPT_TYPE' => $recipientType,
             'DESCRIPTION' => $description,
             'REASON' => $reason,
-            'SHOW' => $show,
-            'SAVECARD' => $saveCard ? '1' : '0',
         ];
-        $params['APPCHECK'] = $this->generateAppcheck($params);
 
-        return $this->baseUrl . '/payment/noreg/send?' . http_build_query($params);
+        if ($saveCard) {
+            $params['SAVECARD'] = '1';
+        }
+
+        $params['CHECKSUM'] = $this->generateChecksum($params);
+
+        return $this->mobileUrl . '/payment/noreg/send?' . http_build_query($params);
     }
 
     public function getNoRegPaymentStatus(
         string $deviceId,
         string $paymentId,
+        int $amount,
+        string $recipient,
+        string $recipientType,
+        string $description,
+        string $reason,
     ): NoRegPaymentResponse {
-        $data = $this->get('/payment/noreg/send/status', [
+        // NoReg status signs with CHECKSUM (trailing newline) over the same
+        // set of params used at create, not APPCHECK. Path is double-`/api/`.
+        $params = [
             'APPID' => $this->config->merchantId,
             'DEVICEID' => $deviceId,
             'ID' => $paymentId,
-        ]);
+            'AMOUNT' => (string) $amount,
+            'RCPT' => $recipient,
+            'RCPT_TYPE' => $recipientType,
+            'DESCRIPTION' => $description,
+            'REASON' => $reason,
+        ];
+        $params['CHECKSUM'] = $this->generateChecksum($params);
+
+        $url = $this->apiUrl . '/api/payment/noreg/send/status?' . http_build_query($params);
+        $request = $this->requestFactory->createRequest('GET', $url);
+        $response = $this->httpClient->sendRequest($request);
+        $data = $this->parseResponse($response);
 
         return NoRegPaymentResponse::fromArray($data);
     }
@@ -259,8 +288,8 @@ final class OneTouchClient
     private function get(string $path, array $params): array
     {
         $params['APPCHECK'] = $this->generateAppcheck($params);
-        $url = $this->baseUrl . $path . '?' . http_build_query($params);
-        $request = new \GuzzleHttp\Psr7\Request('GET', $url);
+        $url = $this->apiUrl . $path . '?' . http_build_query($params);
+        $request = $this->requestFactory->createRequest('GET', $url);
         $response = $this->httpClient->sendRequest($request);
 
         return $this->parseResponse($response);
@@ -270,13 +299,11 @@ final class OneTouchClient
     private function post(string $path, array $params): array
     {
         $params['APPCHECK'] = $this->generateAppcheck($params);
-        $url = $this->baseUrl . $path;
-        $request = new \GuzzleHttp\Psr7\Request(
-            'POST',
-            $url,
-            ['Content-Type' => 'application/x-www-form-urlencoded'],
-            http_build_query($params),
-        );
+        $url = $this->apiUrl . $path;
+        $body = $this->streamFactory->createStream(http_build_query($params));
+        $request = $this->requestFactory->createRequest('POST', $url)
+            ->withHeader('Content-Type', 'application/x-www-form-urlencoded')
+            ->withBody($body);
         $response = $this->httpClient->sendRequest($request);
 
         return $this->parseResponse($response);
@@ -305,6 +332,19 @@ final class OneTouchClient
             array_keys($params),
             array_values($params),
         ));
+
+        return $this->signer->sign($data);
+    }
+
+    /** NoReg CHECKSUM uses trailing newline per ePay docs. */
+    private function generateChecksum(array $params): string
+    {
+        ksort($params);
+        $data = implode("\n", array_map(
+            fn(string $key, string $value) => "{$key}{$value}",
+            array_keys($params),
+            array_values($params),
+        )) . "\n";
 
         return $this->signer->sign($data);
     }

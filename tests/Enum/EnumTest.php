@@ -18,8 +18,10 @@ test('Currency has BGN, EUR, USD', function () {
 test('Environment has correct gateway URLs', function () {
     expect(Environment::Development->gatewayUrl())->toBe('https://demo.epay.bg/')
         ->and(Environment::Production->gatewayUrl())->toBe('https://www.epay.bg/')
-        ->and(Environment::Development->oneTouchBaseUrl())->toBe('https://demo.epay.bg/xdev/api')
-        ->and(Environment::Production->oneTouchBaseUrl())->toBe('https://www.epay.bg/xdev/api');
+        ->and(Environment::Development->oneTouchApiUrl())->toBe('https://demo.epay.bg/xdev/api')
+        ->and(Environment::Production->oneTouchApiUrl())->toBe('https://www.epay.bg/xdev/api')
+        ->and(Environment::Development->oneTouchMobileUrl())->toBe('https://demo.epay.bg/xdev/mobile/api')
+        ->and(Environment::Production->oneTouchMobileUrl())->toBe('https://www.epay.bg/xdev/mobile/api');
 });
 
 test('PaymentStatus has Paid, Denied, Expired', function () {

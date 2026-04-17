@@ -58,10 +58,35 @@ test('PaidWith fromArray', function () {
 
 test('NoRegPaymentResponse with paidWith', function () {
     $r = NoRegPaymentResponse::fromArray(['status' => 'OK', 'payment' => ['STATE' => 3, 'STATE_TEXT' => 'Success', 'NO' => '789', 'paid_with' => ['CARD_TYPE' => 'MC', 'CARD_TYPE_DESCR' => 'Mastercard', 'CARD_TYPE_COUNTRY' => 'BG']]]);
-    expect($r->state)->toBe(3)->and($r->no)->toBe('789')->and($r->paidWith)->toBeInstanceOf(PaidWith::class)->and($r->paymentInstrument)->toBeNull();
+    expect($r->state)->toBe(3)
+        ->and($r->stateText)->toBe('Success')
+        ->and($r->no)->toBe('789')
+        ->and($r->token)->toBeNull()
+        ->and($r->paidWith)->toBeInstanceOf(PaidWith::class)
+        ->and($r->paymentInstrument)->toBeNull();
 });
 
 test('NoRegPaymentResponse with paymentInstrument', function () {
     $r = NoRegPaymentResponse::fromArray(['status' => 'OK', 'payment' => ['STATE' => 3, 'STATE_TEXT' => 'Success', 'NO' => '789', 'payment_instrument' => ['ID' => 'pin1', 'VERIFIED' => 1, 'BALANCE' => 0, 'TYPE' => 1, 'NAME' => 'Visa', 'EXPIRES' => '12/28']]]);
     expect($r->paymentInstrument)->toBeInstanceOf(PaymentInstrument::class)->and($r->paidWith)->toBeNull();
+});
+
+test('NoRegPaymentResponse with reusable token', function () {
+    $r = NoRegPaymentResponse::fromArray(['status' => 'OK', 'payment' => ['STATE' => 3, 'STATE_TEXT' => 'Success', 'NO' => '789', 'TOKEN' => 'reusable-token-xyz']]);
+    expect($r->token)->toBe('reusable-token-xyz');
+});
+
+test('NoRegPaymentResponse with only STATE (pending payment)', function () {
+    $r = NoRegPaymentResponse::fromArray(['status' => 'OK', 'payment' => ['STATE' => 2]]);
+    expect($r->state)->toBe(2)
+        ->and($r->stateText)->toBeNull()
+        ->and($r->no)->toBeNull()
+        ->and($r->token)->toBeNull()
+        ->and($r->paidWith)->toBeNull()
+        ->and($r->paymentInstrument)->toBeNull();
+});
+
+test('NoRegPaymentResponse coerces STATE to int', function () {
+    $r = NoRegPaymentResponse::fromArray(['status' => 'OK', 'payment' => ['STATE' => '3']]);
+    expect($r->state)->toBe(3);
 });

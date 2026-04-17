@@ -821,34 +821,161 @@ $paymentUrl = $oneTouch->createNoRegPaymentUrl(
 // Redirect the customer
 header('Location: ' . $paymentUrl);
 
-// Later, check the payment status
+// Later, check the payment status. The status endpoint requires the same
+// params used at create (they feed into CHECKSUM), plus the payment `id`
+// echoed back in ePay's redirect.
 $status = $oneTouch->getNoRegPaymentStatus(
     deviceId: 'user@example.com',
     paymentId: 'payment_id',
+    amount: 2280,
+    recipient: '8888',
+    recipientType: 'KIN',
+    description: 'Monthly maintenance fee',
+    reason: 'monthly_fee',
 );
 
-// $status->state       - 3 = success, 4 = failure
-// $status->stateText   - Human-readable
-// $status->no          - Payment number
-// $status->paidWith    - Card details (when saveCard=false)
+// $status->state              - 2 = pending, 3 = success, 4 = failure
+// $status->stateText          - Human-readable (nullable)
+// $status->no                 - Payment number (nullable)
+// $status->token              - Reusable token when SAVECARD=1 (nullable)
+// $status->paidWith           - Card details (when saveCard=false)
 // $status->paymentInstrument  - Saved instrument (when saveCard=true)
 ```
 
-### APPCHECK
+#### NoReg redirect callback
 
-All One Touch requests are automatically signed with APPCHECK (HMAC-SHA1 of sorted parameters). This is handled by the SDK; you do not need to do anything.
+After the customer pays, ePay redirects them to your configured `REPLY_ADDRESS`. The query string looks like:
+
+```
+?ret=authok&authok=1&deviceid=<deviceId>&id=<paymentId>
+```
+
+The authorization flow (ePay account) redirects to the same URL but **without** an `id` param. Distinguish the two flows by checking for `id`:
+
+```php
+if (isset($_GET['id'])) {
+    // NoReg card payment: call getNoRegPaymentStatus() to fetch state + token
+} else {
+    // Auth flow: exchange saved KEY for code, then code for token
+}
+```
+
+### Signing
+
+The SDK signs requests automatically:
+
+- **APPCHECK** (HMAC-SHA1, sorted params, no trailing newline) — auth flow, user info, registered payments
+- **CHECKSUM** (HMAC-SHA1, sorted params, **trailing newline**) — noreg create and noreg status
+
+You do not need to compute these yourself.
+
+## Laravel Routes
+
+The SDK ships ready-to-use routes for the three callback types. Enable them in config:
+
+```php
+// config/epay.php
+'routes' => [
+    'enabled' => env('EPAY_ROUTES_ENABLED', false),
+    'prefix' => env('EPAY_ROUTES_PREFIX', 'epay'),
+    'middleware' => [],     // e.g. ['throttle:60,1']
+],
+```
+
+With `enabled = true` and the default prefix `epay`, the following routes are registered:
+
+| Method | URI | Controller | Purpose |
+|--------|-----|------------|---------|
+| `POST` | `/epay/notify` | `WebNotificationController` | WEB API payment notifications |
+| `GET` | `/epay/billing/init` | `BillingController@init` | EasyPay obligation check |
+| `GET` | `/epay/billing/confirm` | `BillingController@confirm` | EasyPay payment confirmation |
+| `GET` | `/epay/callback` | `OneTouchCallbackController` | One Touch auth + noreg redirect |
+
+### Billing resolvers
+
+The Billing controller can't know about your domain's obligations, so you register closures in a service provider:
+
+```php
+use Ux2Dev\Epay\Laravel\EpayFacade as Epay;
+use Ux2Dev\Epay\Billing\Request\InitRequest;
+use Ux2Dev\Epay\Billing\Request\ConfirmRequest;
+use Ux2Dev\Epay\Billing\Response\InitResponse;
+use Ux2Dev\Epay\Billing\Response\ConfirmResponse;
+
+// AppServiceProvider::boot()
+Epay::billingInitUsing(function (InitRequest $req): InitResponse {
+    $obligations = Obligation::where('idn', $req->idn)->unpaid()->get();
+
+    if ($obligations->isEmpty()) {
+        return InitResponse::noObligation($req->idn);
+    }
+
+    return InitResponse::success(
+        idn: $req->idn,
+        shortDesc: 'Задължения на ' . $req->idn,
+        amount: $obligations->sum('amount'),
+        validTo: now()->addDays(30),
+    );
+});
+
+Epay::billingConfirmUsing(function (ConfirmRequest $req): ConfirmResponse {
+    if (Payment::where('tid', $req->tid)->exists()) {
+        return ConfirmResponse::duplicate();
+    }
+
+    Payment::recordFromBilling($req);
+    return ConfirmResponse::success();
+});
+```
+
+The controller throws `LogicException` if a request arrives and no resolver is registered — fail loud rather than silently returning empty responses.
+
+### Listening to callbacks
+
+Every controller dispatches events; wire them in your `EventServiceProvider`:
+
+```php
+use Ux2Dev\Epay\Laravel\Events\NoRegPaymentCallback;
+use Ux2Dev\Epay\Laravel\Events\OneTouchAuthorizationCallback;
+use Ux2Dev\Epay\Laravel\Events\PaymentReceived;
+
+protected $listen = [
+    PaymentReceived::class => [MarkOrderPaid::class],
+    NoRegPaymentCallback::class => [FetchNoRegStatus::class],
+    OneTouchAuthorizationCallback::class => [ExchangeKeyForToken::class],
+];
+```
+
+The One Touch callback **does not** auto-exchange the key for a token — that requires access to the app-stored KEY used when generating the auth URL. Your listener decides what to do:
+
+```php
+final class ExchangeKeyForToken
+{
+    public function handle(OneTouchAuthorizationCallback $event): void
+    {
+        $key = Cache::pull("epay.onetouch.key.{$event->deviceId}");
+        if ($key === null) return;
+
+        $oneTouch = Epay::oneTouch();
+        $code = $oneTouch->getCode($event->deviceId, $key);
+        $token = $oneTouch->getToken($event->deviceId, $code->code);
+
+        // Persist $token->token for future payments
+    }
+}
+```
 
 ## Laravel Events
 
-When using the Laravel controllers, these events are available for listeners:
-
 | Event | Payload | Triggered when |
 |-------|---------|---------------|
-| `PaymentReceived` | `NotificationItem $item, string $merchant` | WEB callback with STATUS=PAID |
-| `PaymentDenied` | `NotificationItem $item, string $merchant` | WEB callback with STATUS=DENIED |
-| `PaymentExpired` | `NotificationItem $item, string $merchant` | WEB callback with STATUS=EXPIRED |
-| `BillingObligationChecked` | `InitRequest $request, string $merchant` | Billing /pay/init processed |
-| `BillingPaymentConfirmed` | `ConfirmRequest $request, string $merchant` | Billing /pay/confirm processed |
+| `PaymentReceived` | `NotificationItem $item, string $merchant` | WEB notification with STATUS=PAID |
+| `PaymentDenied` | `NotificationItem $item, string $merchant` | WEB notification with STATUS=DENIED |
+| `PaymentExpired` | `NotificationItem $item, string $merchant` | WEB notification with STATUS=EXPIRED |
+| `BillingObligationChecked` | `InitRequest $request, string $merchant` | Billing `/billing/init` processed |
+| `BillingPaymentConfirmed` | `ConfirmRequest $request, string $merchant` | Billing `/billing/confirm` processed |
+| `OneTouchAuthorizationCallback` | `string $deviceId, array $params, string $merchant` | One Touch auth redirect (no `id` param) |
+| `NoRegPaymentCallback` | `string $paymentId, string $deviceId, array $params, string $merchant` | One Touch noreg redirect (has `id` param) |
 
 ## Error Handling
 

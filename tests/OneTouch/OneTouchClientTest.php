@@ -4,6 +4,8 @@ declare(strict_types=1);
 use GuzzleHttp\Client;
 use GuzzleHttp\Handler\MockHandler;
 use GuzzleHttp\HandlerStack;
+use GuzzleHttp\Middleware;
+use GuzzleHttp\Psr7\HttpFactory;
 use GuzzleHttp\Psr7\Response;
 use Ux2Dev\Epay\OneTouch\OneTouchClient;
 use Ux2Dev\Epay\OneTouch\Response\TokenResponse;
@@ -15,22 +17,29 @@ use Ux2Dev\Epay\Config\MerchantConfig;
 use Ux2Dev\Epay\Enum\Environment;
 use Ux2Dev\Epay\Exception\EpayException;
 
-function mockClient(array $responses): Client
+function mockClient(array $responses, array &$history = []): Client
 {
     $mock = new MockHandler($responses);
-    return new Client(['handler' => HandlerStack::create($mock)]);
+    $stack = HandlerStack::create($mock);
+    $stack->push(Middleware::history($history));
+    return new Client(['handler' => $stack]);
 }
 
 function makeOtClient(Client $http): OneTouchClient
 {
     $config = new MerchantConfig(merchantId: 'TESTAPP01', secret: 'testsecret', environment: Environment::Development);
-    return new OneTouchClient($config, $http);
+    $factory = new HttpFactory();
+    return new OneTouchClient($config, $http, $factory, $factory);
 }
 
 test('getAuthorizationUrl returns correct URL', function () {
     $client = makeOtClient(mockClient([]));
     $url = $client->getAuthorizationUrl(deviceId: 'user@test.bg', key: 'uniquekey123');
-    expect($url)->toContain('https://demo.epay.bg/xdev/api')->and($url)->toContain('APPID=TESTAPP01')->and($url)->toContain('DEVICEID=user%40test.bg')->and($url)->toContain('KEY=uniquekey123');
+    expect($url)
+        ->toContain('https://demo.epay.bg/xdev/mobile/api/start')
+        ->and($url)->toContain('APPID=TESTAPP01')
+        ->and($url)->toContain('DEVICEID=user%40test.bg')
+        ->and($url)->toContain('KEY=uniquekey123');
 });
 
 test('getAuthorizationUrl includes optional device info', function () {
@@ -39,28 +48,37 @@ test('getAuthorizationUrl includes optional device info', function () {
     expect($url)->toContain('DEVICE_NAME=iPhone')->and($url)->toContain('OS=iOS');
 });
 
-test('getCode returns CodeResponse', function () {
-    $http = mockClient([new Response(200, [], json_encode(['status' => 'OK', 'code' => 'mycode']))]);
+test('getCode hits double-/api/ path and returns CodeResponse', function () {
+    $history = [];
+    $http = mockClient([new Response(200, [], json_encode(['status' => 'OK', 'code' => 'mycode']))], $history);
     $r = makeOtClient($http)->getCode(deviceId: 'user@test.bg', key: 'key123');
-    expect($r)->toBeInstanceOf(CodeResponse::class)->and($r->status)->toBe('OK')->and($r->code)->toBe('mycode');
+    expect($r)->toBeInstanceOf(CodeResponse::class)->and($r->code)->toBe('mycode');
+    expect((string) $history[0]['request']->getUri())->toContain('/xdev/api/api/code/get')
+        ->and((string) $history[0]['request']->getUri())->toContain('APPCHECK=');
 });
 
-test('getToken returns TokenResponse', function () {
-    $http = mockClient([new Response(200, [], json_encode(['status' => 'OK', 'TOKEN' => 'tok123', 'EXPIRES' => 1720188520, 'KIN' => '9999', 'USERNAME' => 'user1', 'REALNAME' => 'Ivan']))]);
+test('getToken hits double-/api/ path and returns TokenResponse', function () {
+    $history = [];
+    $http = mockClient([new Response(200, [], json_encode(['status' => 'OK', 'TOKEN' => 'tok123', 'EXPIRES' => 1720188520, 'KIN' => '9999', 'USERNAME' => 'user1', 'REALNAME' => 'Ivan']))], $history);
     $r = makeOtClient($http)->getToken(deviceId: 'user@test.bg', code: 'mycode');
-    expect($r)->toBeInstanceOf(TokenResponse::class)->and($r->token)->toBe('tok123')->and($r->kin)->toBe('9999');
+    expect($r->token)->toBe('tok123');
+    expect((string) $history[0]['request']->getUri())->toContain('/xdev/api/api/token/get');
 });
 
-test('invalidateToken sends request', function () {
-    $http = mockClient([new Response(200, [], json_encode(['status' => 'OK']))]);
+test('invalidateToken hits double-/api/ path', function () {
+    $history = [];
+    $http = mockClient([new Response(200, [], json_encode(['status' => 'OK']))], $history);
     makeOtClient($http)->invalidateToken(deviceId: 'user@test.bg', token: 'tok123');
-    expect(true)->toBeTrue();
+    expect((string) $history[0]['request']->getUri())->toContain('/xdev/api/api/token/invalidate');
 });
 
-test('getUserInfo returns UserInfoResponse', function () {
-    $http = mockClient([new Response(200, [], json_encode(['status' => 'OK', 'GSM' => '0888123456', 'PIC' => 'pic1', 'REAL_NAME' => 'Ivan', 'ID' => '123', 'KIN' => '9999', 'EMAIL' => 'ivan@test.bg']))]);
+test('getUserInfo hits single-/api/ path and returns UserInfoResponse', function () {
+    $history = [];
+    $http = mockClient([new Response(200, [], json_encode(['status' => 'OK', 'GSM' => '0888123456', 'PIC' => 'pic1', 'REAL_NAME' => 'Ivan', 'ID' => '123', 'KIN' => '9999', 'EMAIL' => 'ivan@test.bg']))], $history);
     $r = makeOtClient($http)->getUserInfo(deviceId: 'user@test.bg', token: 'tok123');
-    expect($r)->toBeInstanceOf(UserInfoResponse::class)->and($r->kin)->toBe('9999')->and($r->paymentInstruments)->toBe([]);
+    expect($r->kin)->toBe('9999')->and($r->paymentInstruments)->toBe([]);
+    expect((string) $history[0]['request']->getUri())->toContain('/xdev/api/user/info')
+        ->and((string) $history[0]['request']->getUri())->not->toContain('/api/api/user/info');
 });
 
 test('getUserInfo with payment instruments', function () {
@@ -75,7 +93,7 @@ test('getUserInfo with payment instruments', function () {
 test('initPayment returns PaymentResponse with ID', function () {
     $http = mockClient([new Response(200, [], json_encode(['status' => 'OK', 'payment' => ['ID' => 'pay1']]))]);
     $r = makeOtClient($http)->initPayment(deviceId: 'user@test.bg', token: 'tok123');
-    expect($r)->toBeInstanceOf(PaymentResponse::class)->and($r->id)->toBe('pay1');
+    expect($r->id)->toBe('pay1');
 });
 
 test('sendPayment returns PaymentResponse with state', function () {
@@ -90,16 +108,88 @@ test('getPaymentStatus returns PaymentResponse', function () {
     expect($r->state)->toBe(3);
 });
 
-test('createNoRegPaymentUrl returns URL', function () {
+test('createNoRegPaymentUrl returns mobile URL with CHECKSUM', function () {
     $client = makeOtClient(mockClient([]));
-    $url = $client->createNoRegPaymentUrl(deviceId: 'user@test.bg', amount: 2280, recipient: '8888', recipientType: 'KIN', description: 'Test', reason: 'fee', show: 'KIN');
-    expect($url)->toContain('https://demo.epay.bg/xdev/api')->and($url)->toContain('APPID=TESTAPP01')->and($url)->toContain('AMOUNT=2280');
+    $url = $client->createNoRegPaymentUrl(
+        deviceId: 'user@test.bg',
+        id: 'order-1',
+        amount: 2280,
+        recipient: '8888',
+        recipientType: 'KIN',
+        description: 'Test',
+        reason: 'fee',
+    );
+    expect($url)
+        ->toContain('https://demo.epay.bg/xdev/mobile/api/payment/noreg/send')
+        ->and($url)->toContain('APPID=TESTAPP01')
+        ->and($url)->toContain('AMOUNT=2280')
+        ->and($url)->toContain('ID=order-1')
+        ->and($url)->toContain('CHECKSUM=');
 });
 
-test('getNoRegPaymentStatus returns NoRegPaymentResponse', function () {
-    $http = mockClient([new Response(200, [], json_encode(['status' => 'OK', 'payment' => ['STATE' => 3, 'STATE_TEXT' => 'Success', 'NO' => '789', 'paid_with' => ['CARD_TYPE' => 'VISA', 'CARD_TYPE_DESCR' => 'Visa', 'CARD_TYPE_COUNTRY' => 'BG']]]))]);
-    $r = makeOtClient($http)->getNoRegPaymentStatus(deviceId: 'user@test.bg', paymentId: 'pay1');
-    expect($r)->toBeInstanceOf(NoRegPaymentResponse::class)->and($r->state)->toBe(3);
+test('createNoRegPaymentUrl with saveCard includes SAVECARD=1', function () {
+    $client = makeOtClient(mockClient([]));
+    $url = $client->createNoRegPaymentUrl(
+        deviceId: 'user@test.bg',
+        id: 'order-1',
+        amount: 100,
+        recipient: '8888',
+        recipientType: 'KIN',
+        description: 'Test',
+        reason: 'fee',
+        saveCard: true,
+    );
+    expect($url)->toContain('SAVECARD=1');
+});
+
+test('getNoRegPaymentStatus hits double-/api/ path with CHECKSUM signing', function () {
+    $history = [];
+    $http = mockClient([new Response(200, [], json_encode([
+        'status' => 'OK',
+        'payment' => ['STATE' => 3, 'STATE_TEXT' => 'Success', 'NO' => '789', 'TOKEN' => 'reuse-tok', 'paid_with' => ['CARD_TYPE' => 'VISA', 'CARD_TYPE_DESCR' => 'Visa', 'CARD_TYPE_COUNTRY' => 'BG']],
+    ]))], $history);
+
+    $r = makeOtClient($http)->getNoRegPaymentStatus(
+        deviceId: 'user@test.bg',
+        paymentId: 'pay1',
+        amount: 2280,
+        recipient: '8888',
+        recipientType: 'KIN',
+        description: 'Test',
+        reason: 'fee',
+    );
+
+    expect($r)->toBeInstanceOf(NoRegPaymentResponse::class)
+        ->and($r->state)->toBe(3)
+        ->and($r->token)->toBe('reuse-tok');
+
+    $uri = (string) $history[0]['request']->getUri();
+    expect($uri)->toContain('/xdev/api/api/payment/noreg/send/status')
+        ->and($uri)->toContain('CHECKSUM=')
+        ->and($uri)->not->toContain('APPCHECK=')
+        ->and($uri)->toContain('AMOUNT=2280')
+        ->and($uri)->toContain('RCPT=8888')
+        ->and($uri)->toContain('RCPT_TYPE=KIN')
+        ->and($uri)->toContain('DESCRIPTION=Test')
+        ->and($uri)->toContain('REASON=fee');
+});
+
+test('getNoRegPaymentStatus parses nullable fields', function () {
+    $http = mockClient([new Response(200, [], json_encode([
+        'status' => 'OK',
+        'payment' => ['STATE' => 2],
+    ]))]);
+
+    $r = makeOtClient($http)->getNoRegPaymentStatus(
+        deviceId: 'd', paymentId: 'p', amount: 1, recipient: 'r', recipientType: 'KIN', description: 'x', reason: 'y',
+    );
+
+    expect($r->state)->toBe(2)
+        ->and($r->stateText)->toBeNull()
+        ->and($r->no)->toBeNull()
+        ->and($r->token)->toBeNull()
+        ->and($r->paidWith)->toBeNull()
+        ->and($r->paymentInstrument)->toBeNull();
 });
 
 test('throws on error response', function () {

@@ -19,6 +19,10 @@ class EpayServiceProvider extends ServiceProvider
 
     public function boot(): void
     {
+        if ($this->app['config']->get('epay.routes.enabled', false)) {
+            $this->loadRoutesFrom(__DIR__ . '/routes.php');
+        }
+
         if ($this->app->runningInConsole()) {
             $this->publishes([
                 __DIR__ . '/config/epay.php' => config_path('epay.php'),

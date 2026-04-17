@@ -17,6 +17,7 @@
         "orchestra/testbench": "^10.0"
     },
     "suggest": {
+        "guzzlehttp/guzzle": "Required for One Touch API (PSR-18 client + PSR-17 factories)",
         "illuminate/support": "^11.0|^12.0"
     },
     "autoload": {

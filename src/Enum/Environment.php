@@ -17,11 +17,19 @@ enum Environment: string
         };
     }
 
-    public function oneTouchBaseUrl(): string
+    public function oneTouchApiUrl(): string
     {
         return match ($this) {
             self::Development => 'https://demo.epay.bg/xdev/api',
             self::Production => 'https://www.epay.bg/xdev/api',
+        };
+    }
+
+    public function oneTouchMobileUrl(): string
+    {
+        return match ($this) {
+            self::Development => 'https://demo.epay.bg/xdev/mobile/api',
+            self::Production => 'https://www.epay.bg/xdev/mobile/api',
         };
     }
 }

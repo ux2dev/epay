@@ -3,6 +3,7 @@ declare(strict_types=1);
 namespace Ux2Dev\Epay\Laravel;
 
 use GuzzleHttp\Client;
+use GuzzleHttp\Psr7\HttpFactory;
 use Ux2Dev\Epay\Billing\BillingHandler;
 use Ux2Dev\Epay\Config\MerchantConfig;
 use Ux2Dev\Epay\Enum\Currency;
@@ -24,6 +25,12 @@ final class EpayManager
     /** @var array<string, OneTouchClient> */
     private array $oneTouchClients = [];
 
+    /** @var \Closure|null */
+    private ?\Closure $billingInitResolver = null;
+
+    /** @var \Closure|null */
+    private ?\Closure $billingConfirmResolver = null;
+
     public function __construct(private readonly array $config)
     {
         $this->currentMerchant = $config['default'] ?? 'main';
@@ -36,7 +43,25 @@ final class EpayManager
         return $clone;
     }
 
+    public function getCurrentMerchant(): string { return $this->currentMerchant; }
+
     public function getConfig(): MerchantConfig { return $this->resolveConfig($this->currentMerchant); }
+
+    public function billingInitUsing(\Closure $resolver): self
+    {
+        $this->billingInitResolver = $resolver;
+        return $this;
+    }
+
+    public function billingConfirmUsing(\Closure $resolver): self
+    {
+        $this->billingConfirmResolver = $resolver;
+        return $this;
+    }
+
+    public function getBillingInitResolver(): ?\Closure { return $this->billingInitResolver; }
+
+    public function getBillingConfirmResolver(): ?\Closure { return $this->billingConfirmResolver; }
 
     public function web(): WebClient
     {
@@ -55,7 +80,10 @@ final class EpayManager
     public function oneTouch(): OneTouchClient
     {
         $name = $this->currentMerchant;
-        if (!isset($this->oneTouchClients[$name])) { $this->oneTouchClients[$name] = new OneTouchClient($this->resolveConfig($name), new Client()); }
+        if (!isset($this->oneTouchClients[$name])) {
+            $factory = new HttpFactory();
+            $this->oneTouchClients[$name] = new OneTouchClient($this->resolveConfig($name), new Client(), $factory, $factory);
+        }
         return $this->oneTouchClients[$name];
     }
 

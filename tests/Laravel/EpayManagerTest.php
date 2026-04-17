@@ -50,3 +50,31 @@ test('different merchants return different clients', function () {
     $m = new EpayManager($this->config);
     expect($m->web())->not->toBe($m->merchant('building_2')->web());
 });
+
+test('getCurrentMerchant returns default when no merchant() call', function () {
+    expect((new EpayManager($this->config))->getCurrentMerchant())->toBe('main');
+});
+
+test('getCurrentMerchant returns named merchant after merchant() call', function () {
+    expect((new EpayManager($this->config))->merchant('building_2')->getCurrentMerchant())->toBe('building_2');
+});
+
+test('billingInitUsing stores resolver and returns same instance', function () {
+    $m = new EpayManager($this->config);
+    $resolver = fn () => null;
+    expect($m->billingInitUsing($resolver))->toBe($m)
+        ->and($m->getBillingInitResolver())->toBe($resolver);
+});
+
+test('billingConfirmUsing stores resolver and returns same instance', function () {
+    $m = new EpayManager($this->config);
+    $resolver = fn () => null;
+    expect($m->billingConfirmUsing($resolver))->toBe($m)
+        ->and($m->getBillingConfirmResolver())->toBe($resolver);
+});
+
+test('billing resolvers default to null', function () {
+    $m = new EpayManager($this->config);
+    expect($m->getBillingInitResolver())->toBeNull()
+        ->and($m->getBillingConfirmResolver())->toBeNull();
+});
