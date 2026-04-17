@@ -4,6 +4,7 @@ use Ux2Dev\Epay\Laravel\EpayManager;
 use Ux2Dev\Epay\Web\WebClient;
 use Ux2Dev\Epay\Billing\BillingHandler;
 use Ux2Dev\Epay\OneTouch\OneTouchClient;
+use Ux2Dev\Epay\EasyPay\EasyPayClient;
 use Ux2Dev\Epay\Config\MerchantConfig;
 use Ux2Dev\Epay\Exception\ConfigurationException;
 
@@ -71,6 +72,20 @@ test('billingConfirmUsing stores resolver and returns same instance', function (
     $resolver = fn () => null;
     expect($m->billingConfirmUsing($resolver))->toBe($m)
         ->and($m->getBillingConfirmResolver())->toBe($resolver);
+});
+
+test('easyPay returns EasyPayClient', function () {
+    expect((new EpayManager($this->config))->easyPay())->toBeInstanceOf(EasyPayClient::class);
+});
+
+test('easyPay caches instances per merchant', function () {
+    $m = new EpayManager($this->config);
+    expect($m->easyPay())->toBe($m->easyPay());
+});
+
+test('different merchants return different EasyPayClient instances', function () {
+    $m = new EpayManager($this->config);
+    expect($m->easyPay())->not->toBe($m->merchant('building_2')->easyPay());
 });
 
 test('billing resolvers default to null', function () {

@@ -6,6 +6,7 @@ use GuzzleHttp\Client;
 use GuzzleHttp\Psr7\HttpFactory;
 use Ux2Dev\Epay\Billing\BillingHandler;
 use Ux2Dev\Epay\Config\MerchantConfig;
+use Ux2Dev\Epay\EasyPay\EasyPayClient;
 use Ux2Dev\Epay\Enum\Currency;
 use Ux2Dev\Epay\Enum\Environment;
 use Ux2Dev\Epay\Enum\SigningMethod;
@@ -24,6 +25,8 @@ final class EpayManager
     private array $billingHandlers = [];
     /** @var array<string, OneTouchClient> */
     private array $oneTouchClients = [];
+    /** @var array<string, EasyPayClient> */
+    private array $easyPayClients = [];
 
     /** @var \Closure|null */
     private ?\Closure $billingInitResolver = null;
@@ -85,6 +88,16 @@ final class EpayManager
             $this->oneTouchClients[$name] = new OneTouchClient($this->resolveConfig($name), new Client(), $factory, $factory);
         }
         return $this->oneTouchClients[$name];
+    }
+
+    public function easyPay(): EasyPayClient
+    {
+        $name = $this->currentMerchant;
+        if (!isset($this->easyPayClients[$name])) {
+            $factory = new HttpFactory();
+            $this->easyPayClients[$name] = new EasyPayClient($this->resolveConfig($name), new Client(), $factory, $factory);
+        }
+        return $this->easyPayClients[$name];
     }
 
     private function resolveConfig(string $name): MerchantConfig
