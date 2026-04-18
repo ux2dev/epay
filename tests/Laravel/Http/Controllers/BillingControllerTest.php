@@ -18,9 +18,7 @@ use Ux2Dev\Epay\Laravel\Events\BillingPaymentConfirmed;
 
 function billingChecksumForController(array $params, string $secret): string
 {
-    ksort($params);
-    $data = implode("\n", array_map(fn ($k, $v) => "{$k}{$v}", array_keys($params), array_values($params)));
-    return hash_hmac('sha1', $data, $secret);
+    return hash_hmac('sha1', \Ux2Dev\Epay\Billing\BillingHandler::buildChecksumData($params), $secret);
 }
 
 test('init invokes resolver, fires event, returns its JSON', function () {

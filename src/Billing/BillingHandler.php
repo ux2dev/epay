@@ -55,15 +55,26 @@ final class BillingHandler
             throw new InvalidResponseException('Missing CHECKSUM field', $queryParams);
         }
         $checksum = $queryParams['CHECKSUM'];
-        $params = $queryParams;
-        unset($params['CHECKSUM']);
-        ksort($params);
-        $data = implode("\n", array_map(
-            fn (string $key, string $value) => "{$key}{$value}",
-            array_keys($params), array_values($params),
-        ));
+        $data = self::buildChecksumData($queryParams);
         if (!$this->signer->verify($data, $checksum)) {
             throw new InvalidResponseException('CHECKSUM verification failed', $queryParams);
         }
+    }
+
+    /**
+     * Build the canonical string ePay signs for Billing requests:
+     * sorted KEY+VALUE pairs joined by "\n", terminated by a trailing "\n".
+     *
+     * @param array<string, string> $queryParams
+     */
+    public static function buildChecksumData(array $queryParams): string
+    {
+        unset($queryParams['CHECKSUM']);
+        ksort($queryParams);
+        $pairs = array_map(
+            fn (string $key, string $value) => "{$key}{$value}",
+            array_keys($queryParams), array_values($queryParams),
+        );
+        return implode("\n", $pairs) . "\n";
     }
 }

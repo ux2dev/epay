@@ -11,9 +11,7 @@ use Ux2Dev\Epay\Exception\InvalidResponseException;
 
 function billingChecksum(array $params, string $secret): string
 {
-    ksort($params);
-    $data = implode("\n", array_map(fn ($k, $v) => "{$k}{$v}", array_keys($params), array_values($params)));
-    return hash_hmac('sha1', $data, $secret);
+    return hash_hmac('sha1', \Ux2Dev\Epay\Billing\BillingHandler::buildChecksumData($params), $secret);
 }
 
 beforeEach(function () {
@@ -82,4 +80,14 @@ test('parseConfirmRequest parses DEPOSIT payment', function () {
     $params['CHECKSUM'] = billingChecksum($params, 'testsecret');
     $r = $this->handler->parseConfirmRequest($params);
     expect($r->type)->toBe(BillingPaymentType::Deposit)->and($r->total)->toBe(5000);
+});
+
+// Regression: ePay signs with a trailing "\n" after the last KEY+VALUE pair.
+// Confirmed against a real ePay test request on 2026-04-17.
+test('buildChecksumData matches the canonical ePay format (with trailing newline)', function () {
+    $params = ['IDN' => '2000001', 'MERCHANTID' => '7000005', 'TID' => '20260417171529315661700020', 'TYPE' => 'BILLING'];
+    $data = \Ux2Dev\Epay\Billing\BillingHandler::buildChecksumData($params);
+    expect($data)->toBe("IDN2000001\nMERCHANTID7000005\nTID20260417171529315661700020\nTYPEBILLING\n");
+    expect(hash_hmac('sha1', $data, 'cUAMSp39r6B2pPh9PjSh5Rd6gYvDVudG'))
+        ->toBe('5a1348bb9578cbe28785d64888c4df81325d6660');
 });

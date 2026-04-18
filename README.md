@@ -590,12 +590,14 @@ The Billing API uses a different CHECKSUM algorithm than the WEB API. The SDK ha
 
 1. Collect all GET parameters except CHECKSUM
 2. Sort alphabetically by parameter name
-3. Concatenate as `KEY1VALUE1\nKEY2VALUE2\n...` (no separator between key and value, newline between pairs)
+3. Concatenate as `KEY1VALUE1\nKEY2VALUE2\n...\n` — no separator between key and value, `\n` between pairs, **and a trailing `\n` after the last pair**
 4. HMAC-SHA1 with your secret word
+
+> The trailing newline is easy to miss and was the source of a real production bug — real ePay requests would fail CHECKSUM verification without it. If you need to compute the canonical data string outside the SDK (e.g. for tooling or tests), call `BillingHandler::buildChecksumData($params)`.
 
 ### Subscriber IDN Numbers
 
-The IDN (subscriber identifier) is your internal number. ePay requires it to be digits only, max 64 characters. The SDK provides a helper:
+The IDN (subscriber identifier) is your internal number. **ePay requires it to be digits only**, max 64 characters — no letters, no dashes, no separators. Same constraint applies to sub-invoice IDNs (e.g. `2000001001` for parent `2000001`, not `2000001-F001`). The SDK provides a helper:
 
 ```php
 use Ux2Dev\Epay\IdnGenerator\IdnGenerator;
